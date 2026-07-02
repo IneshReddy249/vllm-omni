@@ -56,7 +56,9 @@ class MossTTSCUDAGraphCodecWrapper:
         # both codec implementations work.
         decode_fn = getattr(model, "_decode_frame", None) or getattr(model, "_decode", None)
         if decode_fn is None:
-            raise AttributeError(f"{type(model).__name__} exposes neither _decode_frame nor _decode")
+            raise AttributeError(
+                f"{type(model).__module__}.{type(model).__name__} exposes neither _decode_frame nor _decode"
+            )
         self._decode_fn = decode_fn
         self.capture_sizes: list[int] = sorted(capture_sizes)
         self.num_quantizers = num_quantizers
