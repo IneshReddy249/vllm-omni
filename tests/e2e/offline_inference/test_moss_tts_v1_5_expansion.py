@@ -21,11 +21,11 @@ from tests.helpers.runtime import OmniRunner
 from tests.helpers.stage_config import get_deploy_config_path
 
 MODEL = "OpenMOSS-Team/MOSS-TTS-v1.5"
-DEPLOY_CONFIG = get_deploy_config_path("moss_tts.yaml")
+DEPLOY_CONFIG = get_deploy_config_path("moss_tts_80gb.yaml")
 _OMNI_RUNNER_PARAM = (MODEL, DEPLOY_CONFIG, {"stage_init_timeout": 600})
 
 pytestmark = [
-    pytest.mark.skip(reason="https://github.com/vllm-project/vllm-omni/issues/4643"),
+    pytest.mark.skip(reason="offline generate yields no stage outputs — see #B"),
     pytest.mark.slow,
     pytest.mark.tts,
     pytest.mark.parametrize("omni_runner", [_OMNI_RUNNER_PARAM], indirect=True),
