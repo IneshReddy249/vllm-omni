@@ -143,6 +143,14 @@ _TTS_LANGUAGES = frozenset(
     }
 )
 _REF_AUDIO_MIN_DURATION = 1.0  # seconds
+# Voice cloning reproduces the reference's onset behaviour along with its timbre, so
+# leading silence in the reference propagates into generated speech. Opt-in; see #4966.
+_REF_AUDIO_TRIM_SILENCE = os.environ.get("VLLM_OMNI_TRIM_REF_SILENCE", "0") == "1"
+_REF_AUDIO_TRIM_REL_FRAC = 0.05  # threshold = 5% of the reference's own peak
+_REF_AUDIO_TRIM_ABS_FLOOR = 0.01  # never treat anything below this as speech
+_REF_AUDIO_TRIM_FRAME_MS = 5.0  # analysis hop
+_REF_AUDIO_TRIM_PREROLL_MS = 20.0  # keep lead-in so plosives are not shaved
+_REF_AUDIO_TRIM_MAX_FRAC = 0.8  # refuse to remove more than this much of a clip
 _REF_AUDIO_MAX_DURATION = 30.0  # seconds
 _REF_AUDIO_RESOLVE_CACHE_MAX_ENTRIES = 256
 _REF_AUDIO_RESOLVE_CACHE_MAX_BYTES = 256 * 1024 * 1024
@@ -2475,6 +2483,14 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         if wav_np.ndim > 1:
             wav_np = np.mean(wav_np, axis=-1)
         sr = int(sr)
+        if _REF_AUDIO_TRIM_SILENCE:
+            trimmed = self._trim_leading_silence(wav_np, sr)
+            if len(trimmed) < len(wav_np):
+                logger.info(
+                    "Trimmed %.0f ms of leading silence from ref_audio",
+                    (len(wav_np) - len(trimmed)) / sr * 1000.0,
+                )
+            wav_np = trimmed
         artifact_key = self._make_ref_audio_artifact_cache_key(wav_np, sr)
         duration = len(wav_np) / sr if sr > 0 else 0.0
         if duration < _REF_AUDIO_MIN_DURATION:
@@ -2500,6 +2516,36 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         )
         self._put_resolved_ref_audio(cache_key, wav_list, sr, artifact_key)
         return wav_list, sr
+
+    @staticmethod
+    def _trim_leading_silence(wav: np.ndarray, sr: int) -> np.ndarray:
+        """Drop leading silence from reference audio.
+
+        Voice cloning reproduces the reference speaker's onset behaviour along with
+        their timbre, so leading silence in the reference propagates into generated
+        speech. This trims the *reference* only -- never generated audio -- so a
+        bad cut degrades timbre marginally rather than clipping a soft onset in the
+        output.
+
+        The threshold is relative to the reference's own peak (with an absolute
+        floor) so it behaves across recording levels. A short pre-roll is preserved
+        so hard consonant attacks are not shaved.
+        """
+        peak = float(np.abs(wav).max()) if wav.size else 0.0
+        if peak <= 0.0:
+            return wav
+        the = max(_REF_AUDIO_TRIM_ABS_FLOOR, _REF_AUDIO_TRIM_REL_FRAC * peak)
+        n = max(1, int(sr * _REF_AUDIO_TRIM_FRAME_MS / 1000.0))
+        back = int(sr * _REF_AUDIO_TRIM_PREROLL_MS / 1000.0)
+        for i in range(0, max(0, len(wav) - n), n):
+            if float(np.abs(wav[i : i + n]).max()) >= the:
+                start = max(0, i - back)
+                if start == 0:
+                    return wav
+                if start > _REF_AUDIO_TRIM_MAX_FRAC * len(wav):
+                    return wav  # would gut the reference; leave it alone
+                return np.ascontiguousarray(wav[start:])
+        return wav  # entirely sub-threshold: leave untouched, never return empty
 
     @staticmethod
     def _make_ref_audio_artifact_cache_key(wav: np.ndarray, sr: int) -> str:
