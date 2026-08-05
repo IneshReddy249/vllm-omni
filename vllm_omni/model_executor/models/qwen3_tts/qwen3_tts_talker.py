@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import os
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -427,7 +426,7 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
         # which is the source of both the leading silence and its seed-to-seed variance.
         # The vocabulary is checkpoint-specific, so it is derived at load time in
         # :meth:`_init_silence_mask`; this is only the placeholder.
-        self._silence_ban_frames = int(os.environ.get("VLLM_OMNI_SILENCE_BAN_FRAMES", "0"))
+        self._silence_ban_frames = max(0, int(getattr(vllm_config.model_config, "silence_ban_frames", 0) or 0))
         self.register_buffer("_silence_mask", torch.zeros((vocab,), dtype=torch.bool), persistent=False)
 
         # Keys that should stay on GPU in model_intermediate_buffer to avoid
