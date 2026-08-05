@@ -1122,16 +1122,51 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
             self._silence_ban_frames = 0
             return
         vocab = int(self.talker_config.vocab_size)
+        in_range = sorted(t for t in ids if 0 <= t < vocab)
+        num_out_of_range = len(ids) - len(in_range)
+        if num_out_of_range:
+            # Every derived id should be a codebook-0 index for this checkpoint.
+            # Ids outside the talker vocabulary mean the encoder and the talker
+            # disagree on vocabulary size, so the rest of the derivation is not
+            # trustworthy either.
+            logger.warning(
+                "%d of %d derived silence codec tokens fall outside the talker vocabulary "
+                "(size %d); disabling the ban.",
+                num_out_of_range,
+                len(ids),
+                vocab,
+            )
+            self._silence_ban_frames = 0
+            return
+        if not in_range:
+            # An empty derivation would leave an all-False mask: the ban would
+            # suppress nothing while still paying the per-frame check.
+            logger.warning("Derived no silence codec tokens; disabling the ban.")
+            self._silence_ban_frames = 0
+            return
+        # The silence region is a small corner of codebook 0 (12 tokens on
+        # Qwen3-TTS-12Hz-1.7B-Base). A derivation this large means the encode
+        # returned speech-like codes, and masking that much of the vocabulary
+        # would distort generation rather than trim the onset.
+        max_silence_tokens = max(64, vocab // 20)
+        if len(in_range) > max_silence_tokens:
+            logger.warning(
+                "Derived %d silence codec tokens, above the %d sanity limit for a vocabulary of %d; disabling the ban.",
+                len(in_range),
+                max_silence_tokens,
+                vocab,
+            )
+            self._silence_ban_frames = 0
+            return
         mask = torch.zeros((vocab,), dtype=torch.bool)
-        for token in ids:
-            if 0 <= token < vocab:
-                mask[token] = True
+        for token in in_range:
+            mask[token] = True
         self._silence_mask.copy_(mask.to(self._silence_mask.device))
         logger.info(
             "Derived %d silence codec tokens, suppressed for the first %d decode frames: %s",
-            int(mask.sum()),
+            len(in_range),
             self._silence_ban_frames,
-            sorted(t for t in ids if 0 <= t < vocab),
+            in_range,
         )
 
     @torch.no_grad()
