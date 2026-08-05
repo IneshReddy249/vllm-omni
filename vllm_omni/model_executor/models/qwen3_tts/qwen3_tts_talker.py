@@ -30,7 +30,7 @@ from vllm_omni.utils.speaker_cache import (
 )
 
 from .configuration_qwen3_tts import Qwen3TTSConfig, Qwen3TTSSpeakerEncoderConfig, Qwen3TTSTalkerConfig
-from .prompt_embeds_builder import PRECOMPUTED_TEXT_IDS_KEY, Qwen3TTSPromptEmbedsBuilder
+from .prompt_embeds_builder import PRECOMPUTED_TEXT_IDS_KEY, Qwen3TTSPromptEmbedsBuilder, resolve_x_vector_only
 from .qwen3_tts_code_predictor_vllm import Qwen3TTSTalkerCodePredictorForConditionalGenerationVLLM
 from .tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import Qwen3TTSTokenizerV2Config
 from .tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import Qwen3TTSTokenizerV2Encoder
@@ -429,6 +429,15 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
         self._silence_ban_frames = max(0, int(getattr(vllm_config.model_config, "silence_ban_frames", 0) or 0))
         self.register_buffer("_silence_mask", torch.zeros((vocab,), dtype=torch.bool), persistent=False)
 
+        # Per-request generation mode for the silence ban (#4966). The ban is a
+        # Base voice-clone (x-vector-only) fix; ICL onsets are legitimate audio
+        # and must not be masked. Mode is only knowable at prefill, so it is
+        # recorded in preprocess_batch and read back at decode. The batch order
+        # comes from set_batch_req_ids, which the runner calls each step with
+        # the same req_id ordering that indexes sampling_metadata.
+        self._req_x_vector_only: dict[str, bool | None] = {}
+        self._batch_req_ids: list[str] = []
+
         # Keys that should stay on GPU in model_intermediate_buffer to avoid
         # CPU-to-GPU round-trips on every decode step.
         self.gpu_resident_buffer_keys: set[tuple[str, str]] = {
@@ -581,14 +590,30 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
                     logits.shape[0],
                 )
             else:
-                # The step gate is a tiny [B] check, so keep it on CPU. Once every
-                # request in the batch is past the window the ban is a no-op, so skip
-                # the device work rather than paying a host-to-device copy and a
-                # [B, vocab] mask on every decode frame.
+                # Both gates are tiny [B] checks, so keep them on CPU: once no
+                # request is both in scope and inside the window, skip the device
+                # work rather than paying a host-to-device copy and a [B, vocab]
+                # mask on every decode frame.
+                #
+                # Scope the ban to x-vector-only requests (#4966). A request whose
+                # mode was never recorded is left alone: masking a request that
+                # cannot be classified is the risk this gate exists to remove.
+                batch_req_ids = self._batch_req_ids
+                if len(batch_req_ids) == logits.shape[0]:
+                    in_scope = [self._req_x_vector_only.get(rid) is True for rid in batch_req_ids]
+                else:
+                    logger.warning_once(
+                        "Silence ban is enabled but the recorded batch req_ids (%d) do not match "
+                        "the logits batch (%d); the ban will not take effect.",
+                        len(batch_req_ids),
+                        logits.shape[0],
+                    )
+                    in_scope = [False] * logits.shape[0]
+
                 steps = [len(t) for t in output_token_ids]
-                if min(steps) < ban_n:
+                if any(scoped and step < ban_n for scoped, step in zip(in_scope, steps, strict=True)):
                     early = torch.tensor(
-                        [step < ban_n for step in steps],
+                        [scoped and step < ban_n for scoped, step in zip(in_scope, steps, strict=True)],
                         device=logits.device,
                         dtype=torch.bool,
                     ).unsqueeze(1)
@@ -978,11 +1003,29 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
         device: torch.device,
     ) -> None:
         """Delegate batched preprocess to :class:`Qwen3TTSPromptEmbedsBuilder`."""
+        if self._silence_ban_frames > 0:
+            for req_id in req_ids:
+                info_dict = model_intermediate_buffer.get(req_id)
+                if isinstance(info_dict, dict):
+                    self._req_x_vector_only[req_id] = resolve_x_vector_only(info_dict)
         self._prompt_builder.preprocess_batch(
             req_ids=req_ids,
             model_intermediate_buffer=model_intermediate_buffer,
             device=device,
         )
+
+    def set_batch_req_ids(self, req_ids: Sequence[str]) -> None:
+        """Record the current batch's req_ids, in the order that indexes logits.
+
+        Called by the runner after the forward and before ``compute_logits``,
+        with the same ``input_batch`` ordering that ``sampling_metadata``
+        uses. Doubles as the eviction point: any request no longer in the batch
+        has finished or been aborted, so its recorded mode is dropped.
+        """
+        self._batch_req_ids = list(req_ids)
+        if len(self._req_x_vector_only) > len(self._batch_req_ids):
+            live = set(self._batch_req_ids)
+            self._req_x_vector_only = {k: v for k, v in self._req_x_vector_only.items() if k in live}
 
     def _encode_ref_audio_batch(self, wavs: list[np.ndarray], sr: int, *, device: torch.device) -> list[torch.Tensor]:
         fe = self._encoder_feature_extractor
