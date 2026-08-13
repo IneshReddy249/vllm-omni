@@ -427,6 +427,10 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
         # The vocabulary is checkpoint-specific, so it is derived at load time in
         # :meth:`_init_silence_mask`; this is only the placeholder.
         self._silence_ban_frames = max(0, int(getattr(vllm_config.model_config, "silence_ban_frames", 0) or 0))
+        # vLLM only fills sampling_metadata.output_token_ids when penalties, bad
+        # words, or a logits processor need history. compute_logits reads it for
+        # the per-request decode step, so request it when the ban is on.
+        self.logitsprocs_need_output_token_ids = self._silence_ban_frames > 0
         self.register_buffer("_silence_mask", torch.zeros((vocab,), dtype=torch.bool), persistent=False)
 
         # Per-request generation mode for the silence ban (#4966). The ban is a

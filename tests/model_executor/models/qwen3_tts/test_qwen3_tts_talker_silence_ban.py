@@ -159,7 +159,10 @@ def test_missing_sampling_metadata_does_not_crash() -> None:
     assert _banned(out[0]) == set()
 
 
-@pytest.mark.parametrize("metadata", [SimpleNamespace(output_token_ids=None), SimpleNamespace()])
+@pytest.mark.parametrize(
+    "metadata",
+    [SimpleNamespace(output_token_ids=None), SimpleNamespace(), SimpleNamespace(output_token_ids=[])],
+)
 def test_absent_output_token_ids_warns_without_masking(metadata) -> None:
     logits = torch.zeros((1, _VOCAB))
     talker = _make_talker(ban_frames=3, logits=logits)
