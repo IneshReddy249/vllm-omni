@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 import contextlib
 from types import SimpleNamespace
 
@@ -264,25 +267,26 @@ def test_seq_token_counts_matches_padded_input_ids(monkeypatch):
     captured = {}
 
     monkeypatch.setattr(
-        GPUGenerationModelRunner, "_prepare_inputs",
+        GPUGenerationModelRunner,
+        "_prepare_inputs",
         lambda self, so, nst: (None, None, 1),
     )
     monkeypatch.setattr(
-        GPUGenerationModelRunner, "_determine_batch_execution_and_padding",
+        GPUGenerationModelRunner,
+        "_determine_batch_execution_and_padding",
         lambda self, **kw: (
             CUDAGraphMode.PIECEWISE,
             SimpleNamespace(num_tokens=4, num_reqs=1),
-            False, None, None,
+            False,
+            None,
+            None,
         ),
     )
+    monkeypatch.setattr(GPUGenerationModelRunner, "_get_slot_mappings", lambda self, **kw: (None, None))
+    monkeypatch.setattr(GPUGenerationModelRunner, "_build_attention_metadata", lambda self, **kw: (None, None))
     monkeypatch.setattr(
-        GPUGenerationModelRunner, "_get_slot_mappings", lambda self, **kw: (None, None)
-    )
-    monkeypatch.setattr(
-        GPUGenerationModelRunner, "_build_attention_metadata", lambda self, **kw: (None, None)
-    )
-    monkeypatch.setattr(
-        GPUGenerationModelRunner, "_maybe_attach_attention_metadata_extensions",
+        GPUGenerationModelRunner,
+        "_maybe_attach_attention_metadata_extensions",
         lambda self, **kw: None,
     )
 
@@ -293,7 +297,8 @@ def test_seq_token_counts_matches_padded_input_ids(monkeypatch):
 
     monkeypatch.setattr(GPUGenerationModelRunner, "_preprocess", _fake_preprocess)
     monkeypatch.setattr(
-        gen_runner_module, "set_forward_context",
+        gen_runner_module,
+        "set_forward_context",
         lambda *a, **kw: (_ for _ in ()).throw(_SentinelError()),
     )
 
