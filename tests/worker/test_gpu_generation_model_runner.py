@@ -244,7 +244,7 @@ def test_seq_token_counts_matches_padded_input_ids(monkeypatch):
     scheduler counts to seq_token_counts, so sum(counts) != input_ids.numel()
     on any batch the cudagraph dispatcher rounds up to a capture size."""
 
-    class _Sentinel(Exception):
+    class _SentinelError(Exception):
         pass
 
     monkeypatch.setattr(gen_runner_module, "has_ec_transfer", lambda: False)
@@ -294,10 +294,10 @@ def test_seq_token_counts_matches_padded_input_ids(monkeypatch):
     monkeypatch.setattr(GPUGenerationModelRunner, "_preprocess", _fake_preprocess)
     monkeypatch.setattr(
         gen_runner_module, "set_forward_context",
-        lambda *a, **kw: (_ for _ in ()).throw(_Sentinel()),
+        lambda *a, **kw: (_ for _ in ()).throw(_SentinelError()),
     )
 
-    with pytest.raises(_Sentinel):
+    with pytest.raises(_SentinelError):
         GPUGenerationModelRunner.execute_model(runner, _StubSchedulerOutput(3))
 
     counts = captured["model_kwargs"]["seq_token_counts"]
