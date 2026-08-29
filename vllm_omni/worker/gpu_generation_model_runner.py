@@ -307,6 +307,12 @@ class GPUGenerationModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin
                 num_tokens_padded,
                 intermediate_tensors,
             )
+            # [Omni] Models that split a flat token tensor by per-request counts
+            # need input_ids at its exact semantic length. _preprocess sizes it
+            # to num_tokens_padded, so hand these models the unpadded view.
+            if getattr(self.model, "requires_exact_input_shape", False):
+                input_ids = input_ids[:num_tokens_unpadded]
+
             # [Omni] Pass token counts per request for code2wav output slicing
             model_kwargs["seq_token_counts"] = tokens
             if getattr(self.model, "requires_request_ids", False):
