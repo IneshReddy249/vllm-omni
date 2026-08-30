@@ -18,6 +18,10 @@ from vllm_omni.worker.gpu_generation_model_runner import (
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
+class _StopExecutionError(Exception):
+    """Halts execute_model at the model boundary."""
+
+
 class _DummyInputBatch:
     def __init__(self, num_reqs: int = 1):
         self.req_ids = [f"req-{i + 1}" for i in range(num_reqs)]
@@ -241,20 +245,23 @@ class TestSampleTokensBatched:
             GPUGenerationModelRunner.sample_tokens(runner)
 
 
-def test_seq_token_counts_matches_padded_input_ids(monkeypatch):
-    """#6712: _preprocess slices input_ids to num_tokens_padded
-    (gpu_model_runner.py L1557) while execute_model assigns the unpadded
-    scheduler counts to seq_token_counts, so sum(counts) != input_ids.numel()
-    on any batch the cudagraph dispatcher rounds up to a capture size."""
-
-    class _SentinelError(Exception):
-        pass
-
+@pytest.mark.parametrize("exact_shape, expected_len", [(True, 3), (False, 4)])
+def test_exact_shape_models_receive_unpadded_input_ids(monkeypatch, exact_shape, expected_len):
+    """#6712: the cudagraph dispatcher rounds a 3-token batch up to a capture
+    size of 4, so ``_preprocess`` returns a 4-element ``input_ids`` while
+    ``seq_token_counts`` stays ``[3]``. Models opting into
+    ``requires_exact_input_shape`` must receive the trimmed view; everything
+    else must keep the padded buffer.
+    """
     monkeypatch.setattr(gen_runner_module, "has_ec_transfer", lambda: False)
     monkeypatch.setattr(gen_runner_module, "has_kv_transfer_group", lambda: False)
 
     runner = _make_guard_runner()
-    runner.model = SimpleNamespace(has_preprocess=True, requires_request_ids=False)
+    runner.model = SimpleNamespace(
+        has_preprocess=True,
+        requires_request_ids=False,
+        requires_exact_input_shape=exact_shape,
+    )
     runner.cascade_attn_enabled = False
     runner.num_prompt_logprobs = None
     runner.parallel_config = SimpleNamespace(
@@ -264,13 +271,7 @@ def test_seq_token_counts_matches_padded_input_ids(monkeypatch):
         num_ubatches=1,
     )
 
-    captured = {}
-
-    monkeypatch.setattr(
-        GPUGenerationModelRunner,
-        "_prepare_inputs",
-        lambda self, so, nst: (None, None, 1),
-    )
+    monkeypatch.setattr(GPUGenerationModelRunner, "_prepare_inputs", lambda self, so, nst: (None, None, 1))
     monkeypatch.setattr(
         GPUGenerationModelRunner,
         "_determine_batch_execution_and_padding",
@@ -289,21 +290,26 @@ def test_seq_token_counts_matches_padded_input_ids(monkeypatch):
         "_maybe_attach_attention_metadata_extensions",
         lambda self, **kw: None,
     )
+    monkeypatch.setattr(gen_runner_module, "set_forward_context", lambda *a, **kw: contextlib.nullcontext())
 
     def _fake_preprocess(self, so, num_input_tokens, itensors=None):
-        captured["input_ids"] = torch.zeros(num_input_tokens, dtype=torch.int32)
-        captured["model_kwargs"] = {}
-        return (captured["input_ids"], None, None, None, captured["model_kwargs"], None)
+        return (torch.zeros(num_input_tokens, dtype=torch.int32), None, None, None, {}, None)
 
     monkeypatch.setattr(GPUGenerationModelRunner, "_preprocess", _fake_preprocess)
-    monkeypatch.setattr(
-        gen_runner_module,
-        "set_forward_context",
-        lambda *a, **kw: (_ for _ in ()).throw(_SentinelError()),
-    )
 
-    with pytest.raises(_SentinelError):
+    seen = {}
+
+    def _capture(self, **kwargs):
+        seen["input_ids"] = kwargs["input_ids"]
+        seen["counts"] = kwargs["model_kwargs"]["seq_token_counts"]
+        raise _StopExecutionError
+
+    monkeypatch.setattr(GPUGenerationModelRunner, "_run_generation_model", _capture)
+
+    with pytest.raises(_StopExecutionError):
         GPUGenerationModelRunner.execute_model(runner, _StubSchedulerOutput(3))
 
-    counts = captured["model_kwargs"]["seq_token_counts"]
-    assert sum(counts) == captured["input_ids"].numel()
+    assert seen["input_ids"].numel() == expected_len
+    assert seen["counts"] == [3]
+    if exact_shape:
+        assert sum(seen["counts"]) == seen["input_ids"].numel()
