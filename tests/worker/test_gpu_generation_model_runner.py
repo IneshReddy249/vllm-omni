@@ -105,6 +105,9 @@ class _StubSchedulerOutput:
         self.num_scheduled_tokens = {"req-1": total_num_scheduled_tokens}
         self.finished_req_ids = set()
         self.kv_connector_metadata = None
+        self.scheduled_encoder_inputs = {}
+        self.scheduled_spec_decode_tokens = {}
+        self.num_common_prefix_blocks = 0
 
 
 def _make_guard_runner():
