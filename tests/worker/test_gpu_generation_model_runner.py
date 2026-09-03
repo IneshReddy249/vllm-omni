@@ -119,6 +119,7 @@ def _make_guard_runner():
     runner.speculative_config = None
     runner.model_config = SimpleNamespace(async_chunk=False)
     runner.cache_config = CacheConfig()
+    runner.kv_cache_config = SimpleNamespace(kv_cache_groups=[])
     runner.input_batch = _DummyInputBatch()
     runner.model = object()
     runner.parallel_config = SimpleNamespace(
@@ -267,6 +268,7 @@ def test_exact_shape_models_receive_unpadded_input_ids(monkeypatch, exact_shape,
     )
     runner.cascade_attn_enabled = False
     runner.num_prompt_logprobs = None
+    runner.vllm_config = None
     runner.parallel_config = SimpleNamespace(
         distributed_executor_backend=None,
         data_parallel_size=1,
