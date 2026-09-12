@@ -32,6 +32,11 @@ MODEL_MARKS = {
 
 _GATED_MODELS = {"stabilityai/stable-audio-open-1.0"}
 
+# Models whose thresholds are calibrated against max_memory_allocated. All
+# other models keep asserting on the polled device-wide figure until their
+# thresholds have been re-measured on that metric on both CUDA and ROCm.
+_ALLOCATED_THRESHOLD_MODELS = {"stabilityai/stable-audio-open-1.0"}
+
 
 AUDIO_MODEL_PARAMS: dict[str, dict[str, Any]] = {
     "runner_params": {},
@@ -135,12 +140,6 @@ def test_cpu_offload_diffusion_model(model_name: str):
         audio_no_offload = output_no_offload[0].multimodal_output.get("audio")
         check_audio_determinism(audio_offload, audio_no_offload, atol=1e-2)
 
-    # Thresholds are lower bounds on the peak *allocated* saving, i.e. the
-    # weights the offloader keeps off-GPU at the moment of peak usage
-    # (stable-audio: the fp16 T5 encoder, ~209 MB). They are compared against
-    # max_memory_allocated rather than the polled device-wide figure because
-    # the latter includes caching-allocator slack that differs between the two
-    # paths and drifts by tens of MB between runs.
     is_rocm = torch.version.hip is not None
     platform = "rocm" if is_rocm else "cuda"
     threshold = MODELS[model_name][platform]
@@ -148,7 +147,22 @@ def test_cpu_offload_diffusion_model(model_name: str):
         pytest.skip(f"Threshold not defined for {platform} on {model_name}")
     assert threshold is not None
 
-    assert offload_peak_allocated + threshold < no_offload_peak_allocated, (
-        f"Offload peak allocated memory {offload_peak_allocated:.1f} MB should be less than "
-        f"no offload peak allocated memory {no_offload_peak_allocated:.1f} MB by {threshold} MB"
-    )
+    if model_name in _ALLOCATED_THRESHOLD_MODELS:
+        # Threshold is a lower bound on the peak *allocated* saving, i.e. the
+        # weights the offloader keeps off-GPU at the moment of peak usage
+        # (stable-audio: the fp16 T5 encoder, ~209 MB). max_memory_allocated
+        # is used instead of the polled device-wide figure because the latter
+        # includes caching-allocator slack that differs between the two paths
+        # and drifts by tens of MB between runs.
+        assert offload_peak_allocated + threshold < no_offload_peak_allocated, (
+            f"Offload peak allocated memory {offload_peak_allocated:.1f} MB should be less than "
+            f"no offload peak allocated memory {no_offload_peak_allocated:.1f} MB by {threshold} MB"
+        )
+    else:
+        # Threshold is calibrated against the polled device-wide figure and
+        # accounts for runtime memory overhead and fragmentation differences
+        # between CUDA and ROCm.
+        assert offload_peak_memory + threshold < no_offload_peak_memory, (
+            f"Offload peak memory {offload_peak_memory} MB should be less than "
+            f"no offload peak memory {no_offload_peak_memory} MB by {threshold} MB"
+        )
