@@ -5,18 +5,26 @@
 vLLM's startup warmup only runs the model at the CUDA-graph capture sizes
 (e.g. ``[1, 2, 4, 5, 8]`` for the Qwen3-Omni thinker) and at the profile size
 (``max_num_batched_tokens``). ``fused_moe_kernel`` picks its Triton launch
-config from the batch size, keyed by the M values the MoE tuning configs use
-(``1 .. 4096``), so every prefill between those two extremes lands on a config
-that was never compiled. The first such request then JIT-compiles the kernel
-in the middle of serving, which the JIT monitor reports as::
+config from the batch size M: from a tuned config file keyed by M (the
+Qwen3-Omni talker on H100 has one), or from ``get_default_config``'s M
+thresholds when no file exists (the thinker on H100). Either way, prefills
+between those two extremes land on configs that were never compiled, so the
+first request of each size range JIT-compiles the kernel mid-request.
+
+vLLM's JIT monitor logs this with ``warning_once``, so only the first such
+compile per process is visible::
 
     Triton kernel JIT compilation during inference: fused_moe_kernel
 
-On a cold Triton cache that compile takes seconds and can push a realtime
-turn's first token past a client deadline (vllm-project/vllm-omni#9069).
+With every compile logged, a fresh server compiles new configs on each of
+the three turns of ``test_livekit_client_vad_replay``, in both the thinker
+and the talker. On a cold Triton cache those compiles can push a realtime
+turn past a client deadline (vllm-project/vllm-omni#9069).
 
-This module runs one eager dummy forward per tuning bucket, plus an odd-sized
-neighbour, before the JIT monitor activates. The odd neighbour matters
+This module runs one eager dummy forward per size in
+``MOE_TUNING_BATCH_SIZES``, plus an odd-sized neighbour, before the JIT
+monitor activates. The list matches the tuned-config keys and also straddles
+every ``get_default_config`` threshold up to 4096. The odd neighbour matters
 because Triton specializes integer arguments on divisibility by 16:
 ``fused_moe_kernel`` receives ``num_valid_tokens = M * top_k``, so even and odd
 ``M`` compile to different kernels for the same config.
@@ -37,6 +45,8 @@ logger = init_logger(__name__)
 # The batch sizes vLLM's MoE tuning configs are keyed by
 # (benchmarks/kernels/benchmark_moe.py). ``try_get_optimal_moe_config`` maps a
 # batch of M tokens to the nearest key, so one run per key covers its bucket.
+# The same list straddles get_default_config's M thresholds (32, 64, 96, 128,
+# 512), so it also covers models without a tuned config file.
 MOE_TUNING_BATCH_SIZES: tuple[int, ...] = (
     1,
     2,
