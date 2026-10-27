@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Observe YuE2 lifecycle contracts inside a real engine worker."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from vllm_omni.worker.gpu_ar_model_runner import GPUARModelRunner
@@ -24,6 +24,9 @@ class Yue2LifecycleWorkerExtension:
         self.yue2_probe = {
             "preemptions": 0,
             "rollbacks": 0,
+            # Rows that resumed a preempted request and passed the
+            # history/engine reconciliation checks below.
+            "resumed_checks": 0,
             "checked_rows": 0,
             "mixed_steps": 0,
             "synthesis_started": False,
@@ -50,6 +53,11 @@ class Yue2LifecycleWorkerExtension:
         self.yue2_graph_patch.start()
         self.yue2_cancel_job = None
         previous: dict[str, int] = {}
+        resuming: set[str] = set()
+        self.yue2_resuming = resuming
+        # Bounded log of preemption/resume decisions, returned with the probe
+        # so a failed assertion shows why no rollback was observed.
+        self.yue2_events: list[tuple] = []
         prepare = model.prepare_runner_inputs
         reconcile = model._reconcile_history
         queue = model._queue_synthesis
@@ -80,11 +88,23 @@ class Yue2LifecycleWorkerExtension:
             for rid, computed in zip(kwargs["req_ids"], kwargs["num_computed_tokens"]):
                 if int(computed) < previous.get(rid, 0):
                     self.yue2_probe["preemptions"] += 1
+                    resuming.add(rid)
+                    state = model._states.get(rid)
+                    pending = model._pending is not None and any(s.request_id == rid for s in model._pending[2])
+                    self._yue2_event(
+                        "preempt",
+                        rid,
+                        previous.get(rid, 0),
+                        int(computed),
+                        None if state is None else len(state.history),
+                        pending,
+                    )
                 previous[rid] = int(computed)
             return prepare(**kwargs)
 
         def reconcile_history(state, accepted):
-            if len(state.history) + int(state.end_drawn) > accepted:
+            ahead = len(state.history) + int(state.end_drawn) - accepted
+            if ahead > 0:
                 self.yue2_probe["rollbacks"] += 1
             reconcile(state, accepted)
             assert len(state.history) + int(state.end_drawn) <= accepted
@@ -92,6 +112,12 @@ class Yue2LifecycleWorkerExtension:
                 assert len(state.history) == accepted
                 assert not state.truncated and not state.end_drawn
             self.yue2_probe["checked_rows"] += 1
+            if state.request_id in resuming:
+                # First non-discarded row after a recompute, checked above
+                # whether or not the scheduler discarded an in-flight draw.
+                resuming.discard(state.request_id)
+                self.yue2_probe["resumed_checks"] += 1
+                self._yue2_event("resume", state.request_id, accepted, ahead)
 
         def queue_synthesis(state):
             queue(state)
@@ -114,8 +140,14 @@ class Yue2LifecycleWorkerExtension:
         model._resolve_pending = resolve_pending
         return True
 
+    def _yue2_event(self, *event) -> None:
+        if len(self.yue2_events) < 64:
+            self.yue2_events.append(event)
+
     def get_yue2_probe(self):
-        result = dict(self.yue2_probe)
+        result: dict[str, Any] = dict(self.yue2_probe)
+        result["events"] = list(self.yue2_events)
+        result["unresumed"] = sorted(self.yue2_resuming)
         job = self.yue2_cancel_job
         if job is not None:
             if job.cancelled:

@@ -397,7 +397,16 @@ async def test_yue2_preemption_and_synthesis_abort(chunked, enforce_eager, monke
         await asyncio.wait_for(asyncio.gather(*tasks), timeout=600)
         observations = await probe()
         assert observations["preemptions"] > 0, observations
-        assert observations["rollbacks"] > 0, observations
+        # Every preempted song must resume through a checked row, where the
+        # probe asserts the model history never runs ahead of the tokens the
+        # engine accepted (and equals them mid-song). Whether that
+        # row also rolls back a draw depends on whether the scheduler had
+        # discarded one in flight at the preemption, which is timing-dependent
+        # with only a couple of preemptions; the rollback branch itself is
+        # covered deterministically in tests/worker/test_yue2_request_state.py.
+        assert observations["resumed_checks"] > 0, observations
+        assert not observations["unresumed"], observations
+        print("YuE2 preemption rollbacks:", observations["rollbacks"], observations["events"])
         assert observations["checked_rows"] >= 4 * frames, observations
         assert observations["mixed_steps"] > 0, observations
         if enforce_eager:
