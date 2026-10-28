@@ -8,6 +8,16 @@ if TYPE_CHECKING:
     from vllm_omni.worker.gpu_ar_model_runner import GPUARModelRunner
 
 
+def assert_preempted_requests_resumed(observations: dict[str, Any]) -> None:
+    """Every preempted request resumed through a reconcile-checked row.
+
+    Each detected preemption enters ``unresumed`` and only a checked resumed
+    row removes it, so with ``preemptions > 0`` this also implies
+    ``resumed_checks > 0``.
+    """
+    assert not observations["unresumed"], observations
+
+
 class Yue2LifecycleWorkerExtension:
     model_runner: "GPUARModelRunner"
 
