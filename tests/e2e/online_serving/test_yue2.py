@@ -399,11 +399,10 @@ async def test_yue2_preemption_and_synthesis_abort(chunked, enforce_eager, monke
         assert observations["preemptions"] > 0, observations
         # Every preempted song must resume through a checked row, where the
         # probe asserts the model history never runs ahead of the tokens the
-        # engine accepted (and equals them mid-song). Whether that
-        # row also rolls back a draw depends on whether the scheduler had
-        # discarded one in flight at the preemption, which is timing-dependent
-        # with only a couple of preemptions; the rollback branch itself is
-        # covered deterministically in tests/worker/test_yue2_request_state.py.
+        # engine accepted (and equals them mid-song). Recompute preemption
+        # delivers in-flight output and holds the request until it drains, so
+        # the resumed row has no discarded draw to roll back here; the
+        # rollback branch is covered in tests/worker/test_yue2_request_state.py.
         assert observations["resumed_checks"] > 0, observations
         assert not observations["unresumed"], observations
         print("YuE2 preemption rollbacks:", observations["rollbacks"], observations["events"])
