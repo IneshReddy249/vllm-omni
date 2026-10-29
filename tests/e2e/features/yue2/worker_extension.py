@@ -128,8 +128,9 @@ class Yue2LifecycleWorkerExtension:
                 # Only non-discarded rows reach _reconcile_history: sample()
                 # skips discarded partial recompute chunks. Do not clear the
                 # id on a discarded row, or `unresumed` stops catching a
-                # recompute that never completes (see the never-resume
-                # negative control in tests/worker/test_yue2_lifecycle_probe.py).
+                # recompute that never completes (see
+                # test_preempted_request_that_never_resumes_is_rejected in
+                # tests/worker/test_yue2_lifecycle_probe.py).
                 resuming.discard(state.request_id)
                 self.yue2_probe["resumed_checks"] += 1
                 self._yue2_event("resume", state.request_id, accepted, ahead)
