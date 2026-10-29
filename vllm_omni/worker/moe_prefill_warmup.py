@@ -97,8 +97,9 @@ def model_has_fused_moe(model: Any) -> bool:
         from vllm.model_executor.layers.fused_moe import MoERunner
     except ImportError:
         logger.warning(
-            "MoE prefill warmup skipped: vllm.model_executor.layers.fused_moe.MoERunner "
-            "is not importable, so fused_moe_kernel configs may JIT-compile on the first requests."
+            "MoE prefill warmup could not check this model for fused-MoE layers: "
+            "vllm.model_executor.layers.fused_moe.MoERunner is not importable. If the model "
+            "has MoE layers, fused_moe_kernel configs may JIT-compile on the first requests."
         )
         return False
     modules = getattr(model, "modules", None)
@@ -117,10 +118,12 @@ def warm_up_moe_prefill_kernels(worker: Any) -> list[int]:
         logger.info("Skipping MoE prefill warmup (%s=0).", _ENV_FLAG)
         return []
     if getattr(worker, "use_v2_model_runner", False):
+        logger.info("Skipping MoE prefill warmup: not wired for the v2 model runner.")
         return []
 
     model_runner = worker.model_runner
     if not model_has_fused_moe(model_runner.get_model()):
+        logger.info("Skipping MoE prefill warmup: the model has no fused-MoE layers.")
         return []
 
     compilation_config = worker.vllm_config.compilation_config
@@ -129,6 +132,12 @@ def warm_up_moe_prefill_kernels(worker: Any) -> list[int]:
     max_num_tokens = int(worker.scheduler_config.max_num_batched_tokens)
     sizes = moe_prefill_warmup_sizes(max_cudagraph_size, max_num_tokens)
     if not sizes:
+        logger.info(
+            "Skipping MoE prefill warmup: CUDA graph capture (up to %d tokens) already covers every "
+            "MoE batch size up to max_num_batched_tokens=%d.",
+            max_cudagraph_size,
+            max_num_tokens,
+        )
         return []
 
     start = time.perf_counter()
