@@ -3,7 +3,7 @@
 """Startup warmup for prefill-sized fused-MoE Triton configs (#9069)."""
 
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -114,14 +114,43 @@ def test_warmup_skips_v2_model_runner(moe_detection):
     assert worker.model_runner.calls == []
 
 
-def test_model_without_modules_is_not_moe():
+class _FakeMoERunner:
+    pass
+
+
+@pytest.fixture
+def fake_fused_moe_module(monkeypatch):
+    module = ModuleType("vllm.model_executor.layers.fused_moe")
+    module.MoERunner = _FakeMoERunner
+    monkeypatch.setitem(sys.modules, "vllm.model_executor.layers.fused_moe", module)
+
+
+def test_model_without_modules_is_not_moe(fake_fused_moe_module):
     assert model_has_fused_moe(object()) is False
 
 
-def test_missing_moe_runner_symbol_skips_with_a_warning(monkeypatch):
+def test_model_with_moe_runner_modules_is_moe(fake_fused_moe_module):
+    assert model_has_fused_moe(SimpleNamespace(modules=lambda: [object(), _FakeMoERunner()])) is True
+    assert model_has_fused_moe(SimpleNamespace(modules=lambda: [object()])) is False
+
+
+def test_missing_moe_runner_symbol_reports_unknown_with_a_warning(monkeypatch):
     warnings: list[str] = []
     monkeypatch.setitem(sys.modules, "vllm.model_executor.layers.fused_moe", None)
     monkeypatch.setattr(moe_prefill_warmup.logger, "warning", lambda msg, *args: warnings.append(msg % args))
 
-    assert model_has_fused_moe(SimpleNamespace(modules=lambda: [])) is False
+    assert model_has_fused_moe(SimpleNamespace(modules=lambda: [])) is None
     assert any("MoERunner" in warning for warning in warnings)
+
+
+def test_unknown_moe_status_skips_without_claiming_no_moe(monkeypatch):
+    infos: list[str] = []
+    monkeypatch.delenv("VLLM_OMNI_MOE_PREFILL_WARMUP", raising=False)
+    monkeypatch.setattr(moe_prefill_warmup, "model_has_fused_moe", lambda model: None)
+    monkeypatch.setattr(moe_prefill_warmup.logger, "info", lambda msg, *args: infos.append(msg % args))
+    monkeypatch.setattr(moe_prefill_warmup.logger, "debug", lambda msg, *args: infos.append(msg % args))
+    worker = _worker(_moe_model())
+
+    assert warm_up_moe_prefill_kernels(worker) == []
+    assert worker.model_runner.calls == []
+    assert not any("no fused-MoE layers" in line for line in infos)
