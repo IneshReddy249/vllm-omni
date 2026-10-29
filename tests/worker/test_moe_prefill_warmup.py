@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Startup warmup for prefill-sized fused-MoE Triton configs (#9069)."""
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -115,3 +116,12 @@ def test_warmup_skips_v2_model_runner(moe_detection):
 
 def test_model_without_modules_is_not_moe():
     assert model_has_fused_moe(object()) is False
+
+
+def test_missing_moe_runner_symbol_skips_with_a_warning(monkeypatch):
+    warnings: list[str] = []
+    monkeypatch.setitem(sys.modules, "vllm.model_executor.layers.fused_moe", None)
+    monkeypatch.setattr(moe_prefill_warmup.logger, "warning", lambda msg, *args: warnings.append(msg % args))
+
+    assert model_has_fused_moe(SimpleNamespace(modules=lambda: [])) is False
+    assert any("MoERunner" in warning for warning in warnings)

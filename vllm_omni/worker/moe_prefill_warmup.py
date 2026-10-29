@@ -90,9 +90,16 @@ def moe_prefill_warmup_sizes(max_cudagraph_size: int, max_num_tokens: int) -> li
 
 
 def model_has_fused_moe(model: Any) -> bool:
+    # vLLM's fused-MoE layers are ``vllm.model_executor.layers.fused_moe.MoERunner``
+    # modules. If vLLM renames or moves that symbol, warn instead of silently
+    # skipping the warmup.
     try:
         from vllm.model_executor.layers.fused_moe import MoERunner
     except ImportError:
+        logger.warning(
+            "MoE prefill warmup skipped: vllm.model_executor.layers.fused_moe.MoERunner "
+            "is not importable, so fused_moe_kernel configs may JIT-compile on the first requests."
+        )
         return False
     modules = getattr(model, "modules", None)
     if modules is None:
