@@ -125,6 +125,11 @@ class Yue2LifecycleWorkerExtension:
             if state.request_id in resuming:
                 # First non-discarded row after a recompute, checked above
                 # whether or not the scheduler discarded an in-flight draw.
+                # Only non-discarded rows reach _reconcile_history: sample()
+                # skips discarded partial recompute chunks. Do not clear the
+                # id on a discarded row, or `unresumed` stops catching a
+                # recompute that never completes (see the never-resume
+                # negative control in tests/worker/test_yue2_lifecycle_probe.py).
                 resuming.discard(state.request_id)
                 self.yue2_probe["resumed_checks"] += 1
                 self._yue2_event("resume", state.request_id, accepted, ahead)
