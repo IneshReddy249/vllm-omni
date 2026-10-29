@@ -116,7 +116,7 @@ def warm_up_moe_prefill_kernels(worker: Any) -> list[int]:
     ``compile_or_warm_up_model``. Returns the sizes that were run.
     """
     if not moe_prefill_warmup_enabled():
-        logger.info("Skipping MoE prefill warmup (%s=0).", _ENV_FLAG)
+        logger.info("Skipping MoE prefill warmup (%s=%s).", _ENV_FLAG, os.environ.get(_ENV_FLAG))
         return []
     if getattr(worker, "use_v2_model_runner", False):
         logger.info("Skipping MoE prefill warmup: not wired for the v2 model runner.")
