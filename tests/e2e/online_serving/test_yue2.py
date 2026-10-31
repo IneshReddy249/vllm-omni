@@ -406,7 +406,6 @@ async def test_yue2_preemption_and_synthesis_abort(chunked, enforce_eager, monke
         # rollback branch is covered in tests/worker/test_yue2_request_state.py,
         # and this check's negative controls in tests/worker/test_yue2_lifecycle_probe.py.
         assert_preempted_requests_resumed(observations)
-        print("YuE2 preemption rollbacks:", observations["rollbacks"], observations["events"])
         assert observations["checked_rows"] >= 4 * frames, observations
         assert observations["mixed_steps"] > 0, observations
         if enforce_eager:
